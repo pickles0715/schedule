@@ -1,0 +1,196 @@
+import openpyxl
+import pulp
+wb = openpyxl.load_workbook('hokou_20200212.xlsx')
+prob = pulp.LpProblem('schedule',pulp.LpMinimize)
+sheet1 = wb['Sheet1']
+sheet2 = wb['補講実施案']
+num_cell = sheet1['A2:B2713']
+hoko_cell = sheet2['A2:K68']
+
+line = 2712
+n = 67
+m = 21
+days = 3
+
+#授業
+N = []
+#授業対
+P = []
+#補講日の時間(15 = 補講3日目の1講目)
+M = []
+#同時開講時の授業被り生徒数(C[i][j] = 4:授業iとjを両方履修している生徒数が4)
+C = []
+#同時開講出来ない授業対
+F = []
+#連続開講する授業
+L = []
+
+#授業×時間(X[i][j] = 0:授業iを時間jに開講しない/= 1:開講する)
+X = []
+#同時開講する授業対(Y[i][j] = 0:授業iとjを同時開講しない/= 1:同時開講する)
+Y = []
+
+for i in range(n):
+    N += [i+1]
+for i in range(m):
+    M += [i+1]
+for i in N:
+    for j in N:
+        if i<j:
+            add = [i,j]
+            P.append(add)
+for i in N:
+    add = []
+    for j in M:
+        add.append(pulp.LpVariable('x'+str(i)+" "+str(j),lowBound = 0,cat=pulp.LpBinary))
+    X.append(add)
+for i in N:
+    add = []
+    add2 = []
+    for j in N:
+        if i<j:
+            add.append(pulp.LpVariable('y'+str(i)+" "+str(j),lowBound = 0,cat=pulp.LpBinary))
+            add2 += [0]
+    Y.append(add)
+    C.append(add2)
+before = 0
+flag = True
+add = []
+
+for i in range(line):#gakuseki bango jun zentei
+    if before == num_cell[i][1].value:
+        if flag:#ikkome
+            add += [num_cell[i-1][0].value]
+        add += [num_cell[i][0].value]
+        flag = False
+    else:
+        if flag == False:
+            for i in add:
+                for j in add:
+                    if i<j:
+                        C[i-1][j-i-1] += 1
+        add = []
+        flag = True
+    before = num_cell[i][1].value
+#print(C[2][63],C[20][45],C[38][27],C[41][24],C[43][22],C[54][11])
+for i in X:#どこかの時間で開講必須
+    prob += sum(i) == 1
+
+dic = {}
+for i in range(n):#同じ担当教員の授業をF(同時開講出来ない授業対)に入れる
+    key = hoko_cell[i][6].value
+    if key in dic:
+        if type(dic[key]) is list:
+            dic[key].append(hoko_cell[i][0].value)
+        else:
+            add = [dic[key]]
+            add.append(hoko_cell[i][0].value)
+            dic[key] = add
+    else:
+        dic[key] = hoko_cell[i][0].value
+for i in dic:
+    if type(dic[i]) is list:
+        for j in dic[i]:
+            for k in dic[i]:
+                if j<k:
+                   F.append([j,k]) ##
+dic = {}
+for i in range(n):#連続開講
+    l = hoko_cell[i][10].value
+    num = hoko_cell[i][0].value
+    if type(l) is int:
+        if not l in dic:
+            dic[l] = num
+        else:
+            if type(dic[l]) is list:
+                dic[l].append(num)
+            else:
+                add = [dic[l]]
+                add.append(num)
+                dic[l] = add
+print(dic)
+for i in dic:
+    L.append(dic[i])
+print(L) # L は同時に開講したい授業リストのリスト
+K = [0,7,14] # K は1,2,3日目の最初のコマ
+for i in L:
+    flag = True
+    count = 0 # 連続したい科目
+    for j in i: # i:同時に開講したい授業リスト, j:授業
+        if flag:
+            beg = X[j-1]
+            flag = False
+        else:
+            count += 1
+            for k in K:
+                l = 0
+                while count+l < 7:
+                    prob += beg[k+l] == X[j-1][k+count+l]
+                    l += 1 ##
+a = [7,8,9]
+tX = []
+for i in range(n):#開講出来ない時間iに対してx(i)=0の制約を付ける#
+    add = 0
+    add1 = []
+    for j in a:
+        num = hoko_cell[i][j].value
+        if type(num) is str:
+            spl = [int(x) for x in num.split(',')]
+            for k in spl:
+                add1.append(k + add)
+        elif type(num) is int:
+            spl = num
+            add1.append(spl + add)
+        add += 7
+    tX.append(add1)
+for i in N:
+    for j in M:
+        if not j in tX[i-1]:
+            prob += X[i-1][j-1] == 0 ##
+obj = 0
+for (i,j) in P:
+    obj += C[i-1][j-i-1]*Y[i-1][j-i-1]
+prob.setObjective(obj)
+
+for (i,j) in P:
+    for k in M:
+        prob += X[i-1][k-1] + X[j-1][k-1] - Y[i-1][j-i-1] <= 1
+
+for (i,j) in F:
+    prob += Y[i-1][j-i-1] == 0
+
+prob.solve()
+c = pulp.value(prob.objective)
+print(c)
+for x in X:
+    for y in x:
+        if pulp.value(y) == 1:
+            print('{}:{}'.format(y,pulp.value(y)))
+K = []
+a = 10
+cl = 7
+prob += obj <= c + a
+for i in N:
+    add = []
+    for j in range(days):
+        for k in range(cl):
+            if k+1 == 1:
+                add += [3]
+            elif k+1 == 5 or k+1 == 7:
+                add += [2]
+            else:
+                add += [1]
+    K.append(add)
+obj2 = 0
+for i in range(n):
+    for j in range(m):
+        obj2 += K[i][j] + X[i][j]
+prob.setObjective(obj2)
+prob.solve()
+c = pulp.value(prob.objective)
+print(c)
+print(pulp.value(obj))
+for x in X:
+    for y in x:
+        if pulp.value(y) == 1:
+            print('{}:{}'.format(y,pulp.value(y)))
